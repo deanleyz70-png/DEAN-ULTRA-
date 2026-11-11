@@ -7,6 +7,9 @@ const path = require("path");
 const os = require("os");
 const readline = require("readline");
 const FormData = require("form-data");
+const { exec } = require("child_process");
+const util = require("util");
+const execAsync = util.promisify(exec);
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 let antiDB = {};
 try{ antiDB = JSON.parse(fs.readFileSync('./anti.json')); }catch(e){ antiDB = {}; }
@@ -178,6 +181,11 @@ await importSessionId(envSid);
   sock.ev.on('connection.update', u=>{
     if(u.connection==='open'){
       console.log("╔════════════════════════════════════╗\n║ ✅ DEAN-ULTRA V1 CONNECTED SUCCESSFULLY ||\n╚════════════════════════════════════╝");
+      try {
+  setTimeout(() => {
+    sock.sendMessage(sock.user.id, { text: `✅ *DEAN-ULTRA V1 CONNECTED SUCCESSFULLY* ||\n\n🤖 Bot is now online and ready.\n🕒 Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Africa/Gaborone' })}\n\nType *.menu* to get started.` });
+  }, 5000);
+} catch(e) { console.log("Failed to send connect msg:", e.message); } 
     }
     if(u.connection==='close' && u.lastDisconnect?.error?.output?.statusCode!==DisconnectReason.loggedOut) startBot();
   });
@@ -838,6 +846,18 @@ async function wolfxGet(q){
 
    
  // DEAN-ULTRA MUSIC - +play = document, +song = audio
+           async function compressTo128(url) {
+  const input = `/tmp/in_${Date.now()}.mp3`;
+  const output = `/tmp/out_${Date.now()}.mp3`;
+  const res = await axios.get(url, { responseType: 'arraybuffer' });
+  fs.writeFileSync(input, Buffer.from(res.data));
+  try { await execAsync(`ffmpeg -y -i "${input}" -b:a 128k -ar 44100 "${output}"`); } catch(e) { return fs.readFileSync(input); }
+  const buf = fs.readFileSync(output);
+  try { fs.unlinkSync(input); } catch(e) {}
+  try { fs.unlinkSync(output); } catch(e) {}
+  return buf;
+}
+
 async function getMusic(query) {
     let dlUrl = null, title = query, source = '';
 
@@ -888,7 +908,8 @@ if (cmd === 'play') {
         }
         // DOCUMENT format
         await sock.sendMessage(from, {
-            document: { url: dlUrl },
+            document: await compressTo128(dlUrl),
+mimetype: 'audio/mpeg',
             mimetype: 'audio/mpeg',
             fileName: `${title}.mp3`,
            caption: `> _Powered by Dean-Ultra_ ✅`
@@ -914,7 +935,8 @@ if (cmd === 'song') {
         }
         // AUDIO format
         await sock.sendMessage(from, {
-            audio: { url: dlUrl },
+            audio: await compressTo128(dlUrl),
+mimetype: 'audio/mpeg',
             mimetype: 'audio/mpeg',
             fileName: `${title}.mp3`
         }, { quoted: m });
