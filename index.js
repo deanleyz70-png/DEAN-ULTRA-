@@ -553,53 +553,68 @@ _By DEAN-ULTRA_ 👑`;
   }
   return;
 }   
-        if(cmd==="find" || cmd==="shazam"){
-      try{
-        const contextInfo = m.message?.extendedTextMessage?.contextInfo;
-        const quotedMsg = contextInfo?.quotedMessage;
-        if(!quotedMsg) return await sock.sendMessage(from,{text:"*Reply to a video/song with .shazam* - e.g reply to Lizzy's video"},{quoted:m});
-        const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
-        const quotedType = Object.keys(quotedMsg)[0];
-        const mediaMsg = quotedMsg[quotedType];
-        const stream = await downloadContentFromMessage(mediaMsg, quotedType.replace('Message',''));
-        let chunks = []; for await (const c of stream) chunks.push(c);
-        let buffer = Buffer.concat(chunks);
-        if(!buffer.length) return await sock.sendMessage(from,{text:"_Failed to download video - resend it_ "},{quoted:m});
-        const tmpIn = path.join(os.tmpdir(), `find_in_${Date.now()}.mp4`);
-        fs.writeFileSync(tmpIn, buffer);
-        let finalPath = tmpIn;
-        try{
-          const { execSync } = require('child_process');
-          const tmpOut = path.join(os.tmpdir(), `find_out_${Date.now()}.mp3`);
-          execSync(`ffmpeg -y -i "${tmpIn}" -t 15 -vn -b:a 128k "${tmpOut}"`, {timeout:15000});
-          if(fs.existsSync(tmpOut)) finalPath = tmpOut;
-        }catch(e){ console.log("ffmpeg skip:", e.message); }
-        let title=null, artist=null, cover=null, found=false;
-        try{
-          const form = new FormData();
-          form.append('audio', fs.createReadStream(finalPath));
-          const res = await axios.post('https://apix.wolvarex.com/api/shazam/recognize', form, { headers: {...form.getHeaders(), "x-api-key": WOLFX_KEY }, timeout: 30000 });
-          const d = res.data?.data || res.data?.result || res.data?.track || res.data;
-          if(d){ title = d.title || d.name; artist = d.artist || d.subtitle; cover = d.image || d.cover || ""; if(title) found=true; console.log("Shazam found:", title); }
-        }catch(e){ console.log("APIX fail", e.response?.data || e.message); }
-        if(!found && AUDD_KEY){
-          try{
-            const form2 = new FormData();
-            form2.append('file', fs.createReadStream(finalPath));
-            form2.append('api_token', AUDD_KEY);
-            form2.append('return', 'apple_music,spotify');
-            const res2 = await axios.post('https://api.audd.io/', form2, { headers: form2.getHeaders(), timeout: 20000 });
-            const r = res2.data?.result;
-            if(r?.title){ title=r.title; artist=r.artist; cover=r.spotify?.album?.images?.[0]?.url||""; found=true; }
-          }catch(e){ console.log("AUDD fail", e.message); }
-        }
-        try{ fs.unlinkSync(finalPath); }catch{} 
-        try{ if(finalPath!==tmpIn) fs.unlinkSync(tmpIn); }catch{}
-        if(!found) return await sock.sendMessage(from,{text:`_Find failed: No match - try clearer audio (15 sec with vocals)_`},{quoted:m});
-        let text = `*🎧 FOUND!*\n\n*Title:* ${title}\n*Artist:* ${artist}\n\n_Use .play ${title}_\n\n> _Powered by DEAN-ULTRA ✅_`;
-        if(cover){ try{ return await sock.sendMessage(from,{ image: { url: cover }, caption: text },{quoted:m}); } catch{ return await sock.sendMessage(from,{text},{quoted:m}); } } else { return await sock.sendMessage(from,{text},{quoted:m}); }
-      }catch(e){ console.log("FIND CRASH", e.message); return await sock.sendMessage(from,{text:`_Find failed: ${e.message.slice(0,80)}_`},{quoted:m}); }
+     if(cmd=="find" || cmd=="shazam"){
+  try{
+    const contextInfo = m.message?.extendedTextMessage?.contextInfo;
+    const quotedMsg = contextInfo?.quotedMessage;
+    if(!quotedMsg) return await sock.sendMessage(from, {text:"*Reply to a video/song with .shazam* - e.g reply to Lizzy's video"},{quoted:m});
+
+    const quotedType = Object.keys(quotedMsg)[0];
+    const mediaMsg = quotedMsg[quotedType];
+    const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+    const stream = await downloadContentFromMessage(mediaMsg, quotedType.replace('Message',''));
+    let chunks = []; for await (const c of stream) chunks.push(c);
+    let buffer = Buffer.concat(chunks);
+    if(!buffer.length) return await sock.sendMessage(from, {text:"_Failed to download video - resend it_"},{quoted:m});
+
+    const tmpIn = path.join(os.tmpdir(), `find_in_${Date.now()}.mp4`);
+    fs.writeFileSync(tmpIn, buffer);
+
+    await sock.sendMessage(from, {text:"_Listening... 🔍_"},{quoted:m});
+
+    // --- 5 sec, 16kHz, mono = ~200KB - fits WolfX limit ---
+    const { execSync } = require('child_process');
+    const tmpRaw = path.join(os.tmpdir(), `find_raw_${Date.now()}.raw`);
+    try{
+      execSync(`ffmpeg -y -i "${tmpIn}" -t 5 -vn -ac 1 -ar 16000 -f s16le "${tmpRaw}"`, {timeout:15000});
+    }catch(e){
+      return await sock.sendMessage(from, {text:"_ffmpeg failed - video too short?_"},{quoted:m});
     }
+    if(!fs.existsSync(tmpRaw)) return await sock.sendMessage(from, {text:"_Failed to convert audio_"},{quoted:m});
+
+    let pcmBuffer = fs.readFileSync(tmpRaw);
+    let base64Audio = pcmBuffer.toString('base64');
+
+    try{ fs.unlinkSync(tmpIn); fs.unlinkSync(tmpRaw); }catch(e){}
+
+    const res = await axios.post('https://apis.xwolf.space/api/shazam/recognize', {
+      audio: base64Audio
+    }, {
+      headers: { "x-api-key": APIX_KEY, "Content-Type": "application/json" },
+      timeout: 30000
+    });
+
+    const d = res.data?.data || res.data?.result || res.data?.track || res.data;
+    const track = d?.track || d;
+    let title = track?.title || track?.name || d?.title || "";
+    let artist = track?.subtitle || track?.artist || d?.artist || d?.subtitle || "";
+    let cover = track?.images?.coverart || track?.image || track?.cover || d?.image || d?.cover || "";
+
+    if(!title) return await sock.sendMessage(from, {text:"_Couldn't find that song, try a clearer part / louder video_"},{quoted:m});
+
+    // --- OLD STYLE FORMAT ---
+    let msg = `🎧 FOUND!\n\n*Title:* ${title}\n*Artist:* ${artist || "Unknown Artist"}\n\n_Use .play ${artist || ""} ${title}_\n\n> Powered by DEAN-ULTRA ✅`;
+    if(cover) {
+      await sock.sendMessage(from, {image:{url:cover}, caption:msg},{quoted:m});
+    } else {
+      await sock.sendMessage(from, {text:msg},{quoted:m});
+    }
+
+  }catch(e){
+    console.log("Shazam fail", e.response?.data || e.message);
+    await sock.sendMessage(from, {text:"_Couldn't find that song, try a clearer part / louder video_\n\n> Powered by DEAN-ULTRA ✅"},{quoted:m});
+  }
+}
        if(cmd==="setprefix"){ 
       if(!isOwner) return await sock.sendMessage(from,{text:"❌ Owner command only"},{quoted:m});
       PREFIX = query.trim() || PREFIX; 
@@ -1124,44 +1139,78 @@ if(cmd==="ep"){
   await sock.sendMessage(from,{text:txt},{quoted:m});
   return;
 } 
-     // +video - NEW Wolvrex endpoint
+ // +video - FIXED - Send via URL, don't download on panel
 if (cmd === 'video') {
-    if (!args) return reply('❌ Usage: +video <song / video name>\nExample: +video Culture Love Bybit');
+    if (!query) return await sock.sendMessage(from, {text: '❌ Usage: .video <song / video name>'}, {quoted: m});
     try {
-        await reply('🎬 Searching & downloading video... please wait');
+        await sock.sendMessage(from, {text: '🎬 Searching & downloading video... please wait'}, {quoted: m});
 
-        const res = await axios.get(`https://apis.xwolf.space/download/mp4`, {
-            params: { q: args },
-            headers: { 'x-api-key': WOLFX_KEY },
-            timeout: 120000
-        });
+        const search = await yts(query);
+        const found = search.videos && search.videos[0];
+        if (!found) return await sock.sendMessage(from, {text: '❌ No video found for: ' + query}, {quoted: m});
 
-        let dlUrl = res.data?.downloadUrl || res.data?.url || res.data?.result?.downloadUrl || res.data?.result?.url || res.data?.data?.url || res.data?.link;
+        const ytUrl = found.url;
+        let title = found.title || query;
+        console.log('VIDEO YT:', ytUrl);
 
-        if (!dlUrl) {
-            // Fallback to alternate provider
-            const res2 = await axios.get(`https://apis.xwolf.space/download/ytmp5`, {
-                params: { url: args },
-                headers: { 'x-api-key': WOLFX_KEY },
-                timeout: 120000
-            });
-            dlUrl = res2.data?.downloadUrl || res2.data?.url || res2.data?.result?.url;
+        const getLink = (d) => d?.downloadUrl || d?.download_url || d?.url || d?.link || d?.result?.downloadUrl || d?.result?.download_url || d?.result?.url || d?.data?.downloadUrl || d?.data?.download_url || d?.data?.url || d?.data?.link || d?.download?.url || null;
+        let candidates = [];
+
+        // TRY 1: Cobalt ALT
+        try {
+            const r = await axios.post('https://cobalt-api.kwiatekmiki.com/api/json', {
+                url: ytUrl, vCodec: 'h264', vQuality: '720', aFormat: 'mp3', filenamePattern: 'basic'
+            }, { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 60000 });
+            if (r.data?.url) candidates.push(r.data.url);
+            console.log('COBALT-ALT:', r.data?.url ? 'GOT LINK' : 'NO LINK');
+        } catch(e) { console.log('COBALT-ALT err:', e.message); }
+
+        // TRY 2: GiftedTech
+        try {
+            const r = await axios.get(`https://api.giftedtech.web.id/api/download/ytmp4`, { params: { url: ytUrl }, timeout: 60000 });
+            const link = getLink(r.data);
+            if (link) candidates.push(link);
+            console.log('GIFTED:', link ? 'GOT LINK' : 'NO LINK');
+        } catch(e) { console.log('GIFTED err:', e.message); }
+
+        // TRY 3: Apix
+        try {
+            const r = await axios.get(`${APIX_BASE}/download/mp4`, { params: { url: ytUrl }, headers: { 'x-api-key': APIX_KEY }, timeout: 60000 });
+            const link = getLink(r.data);
+            if (link) candidates.push(link);
+            console.log('APIX:', link ? 'GOT LINK' : 'NO LINK');
+        } catch(e) { console.log('APIX err:', e.message); }
+
+        if (!candidates.length) return await sock.sendMessage(from, {text: '❌ All video servers are down right now. Try again in 10 mins, or use .play for audio instead'}, {quoted: m});
+
+        // NEW: Send by URL directly - no panel download, no 502 on download
+        let sent = false;
+        let lastErr = '';
+        for (let dlUrl of candidates) {
+            try {
+                console.log('Sending via URL:', dlUrl.slice(0,100));
+                await sock.sendMessage(from, {
+                    video: { url: dlUrl },
+                    mimetype: 'video/mp4',
+                    fileName: `${title}.mp4`,
+                    caption: `🎬 *${title}*\n_Downloaded by DEAN-ULTRA_`
+                }, { quoted: m });
+                sent = true;
+                break;
+            } catch(e) {
+                console.log('Send via URL failed, trying next link:', e.message);
+                lastErr = e.message;
+                continue;
+            }
         }
 
-        if (!dlUrl) return reply('❌ Could not get video link. Try +play instead');
-
-        const file = await axios.get(dlUrl, { responseType: 'arraybuffer', timeout: 120000 });
-        await sock.sendMessage(from, {
-            video: Buffer.from(file.data),
-            mimetype: 'video/mp4',
-            fileName: `${args}.mp4`,
-            caption: `🎬 *${args}*\n_Downloaded by DEAN-ULTRA_`
-        }, { quoted: msg });
+        if (!sent) return await sock.sendMessage(from, {text: `❌ Got links but WhatsApp couldn't fetch them: ${lastErr.slice(0,100)}`}, {quoted: m});
 
     } catch (e) {
         console.log('VIDEO ERROR:', e.message);
-        reply(`❌ Failed: ${e.message}`);
+        await sock.sendMessage(from, {text: `❌ Failed: ${e.message}`}, {quoted: m});
     }
+    return;
 }
 });
 }
