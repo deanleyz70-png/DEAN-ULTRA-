@@ -10,6 +10,7 @@ const FormData = require("form-data");
 const { exec } = require("child_process");
 const util = require("util");
 const execAsync = util.promisify(exec);
+const { handleExtras, autoFeatures } = require('./extras.js');
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 let antiDB = {};
 try{ antiDB = JSON.parse(fs.readFileSync('./anti.json')); }catch(e){ antiDB = {}; }
@@ -64,7 +65,7 @@ async function doAntiAction(sock, from, sender, msgKey, type, groupId){
 }
 const ask = (q) => new Promise(res => rl.question(q, res));
 const APIX_BASE = 'https://apix.wolvarex.com';
-const APIX_KEY = 'wxa_u_fb1ac38983';
+const APIX_KEY = 'wxa_u_5cb5aub2uv';
 const WOLFX_KEY = APIX_KEY;
 const CURIOUS_KEY = "ct_RCt6zqQk-BQhc3EiV2z3S-GV0PGoL348Y7g556E5WYY"; // from API Access page
 const CURIOUS_BASE = "https://curiousapis.name.ng";
@@ -177,7 +178,29 @@ await importSessionId(envSid);
       console.log(`\n🔑 YOUR CODE FOR ${phoneNumber}: ${code}\n`);
     }catch(e){ console.log("Pairing error:",e.message) }
   }
-
+// ANTICALL + STATUS REACT - checks OWNER config
+sock.ev.on('call', async (calls) => {
+  try{
+    for(let c of calls){
+      if(c.status !== 'offer') continue;
+      let db2 = {};
+      try{ db2 = JSON.parse(require('fs').readFileSync('./extras.json')); }catch(e){}
+      if(!db2["OWNER"]?.anticall) continue;
+      await sock.rejectCall(c.id, c.from);
+      await sock.sendMessage(c.from, { text: "📵 *Anticall:* Calls are not allowed. Message instead." });
+    }
+  }catch(e){}
+});
+sock.ev.on('messages.upsert', async ({messages}) => {
+  try{
+    let m2 = messages[0];
+    if(!m2 || m2.key.remoteJid !== 'status@broadcast') return;
+    let db2 = {};
+    try{ db2 = JSON.parse(require('fs').readFileSync('./extras.json')); }catch(e){}
+    if(!db2["OWNER"]?.autostatusreact) return;
+    await sock.sendMessage('status@broadcast', { react: { text: "❤️", key: m2.key } });
+  }catch(e){}
+});
   sock.ev.on('connection.update', u=>{
     if(u.connection==='open'){
       console.log("╔════════════════════════════════════╗\n║ ✅ DEAN-ULTRA V1 CONNECTED SUCCESSFULLY ||\n╚════════════════════════════════════╝");
@@ -328,6 +351,10 @@ if(mode==="kick"){await sock.sendMessage(from,{text:"@"+tag+" Kicked for link!",
     const cmd=args.shift().toLowerCase();
     const query=args.join(" ");
     const hrstart = process.hrtime();
+           // NEW EXTRAS FILE
+await autoFeatures(sock, m, from, isGroup);
+let handled = await handleExtras({sock, from, m, cmd, args, query, isOwner, isGroup, isAdminOrOwner, senderId, PREFIX});
+if(handled) return;
                  if(cmd==="menu"){
       try{
         const more = String.fromCharCode(8206).repeat(4001);
@@ -349,7 +376,42 @@ if(mode==="kick"){await sock.sendMessage(from,{text:"@"+tag+" Kicked for link!",
         const memUsed = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1);
         const memTotal = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
         const r = ram();
-                  const totalCmds = (fs.readFileSync(__filename,'utf8').match(/if\(cmd===/g)||[]).length;
+                  // AUTO COUNT - counts ALL files, ALL styles
+function countCmds(file) {
+  try {
+    const txt = fs.readFileSync(file, 'utf8');
+    // counts if(cmd===, if(cmd==, if(cmd ===, cmd==="x" || cmd==="y"
+    const a = (txt.match(/if\s*\(\s*cmd\s*===?\s*["']/g) || []).length;
+    const b = (txt.match(/cmd\s*===?\s*["'][^"']+["']/g) || []).length;
+    const c = (txt.match(/\.includes\(cmd\)/g) || []).length;
+    return a + b + c;
+  } catch(e){ return 0; }
+}
+const totalCmds = getAllCmdNames().length;
+          // AUTO LIST - extracts every command name by itself
+function getAllCmdNames() {
+  let names = new Set();
+  const files = [__filename, './extras.js'];
+  for (const f of files) {
+    try {
+      const txt = fs.readFileSync(f, 'utf8');
+      // matches cmd==="ping" , cmd=='ping' , cmd=="ping" || cmd=="pong"
+      const re1 = /cmd\s*===?\s*["']([^"']+)["']/g;
+      let m;
+      while ((m = re1.exec(txt)) !== null) names.add(m[1]);
+      // matches ["approveall","approve"].includes(cmd)
+      const re2 = /\[([^\]]+)\]\.includes\(cmd\)/g;
+      while ((m = re2.exec(txt)) !== null) {
+        const inside = m[1];
+        const parts = inside.match(/["']([^"']+)["']/g) || [];
+        parts.forEach(p => names.add(p.replace(/["']/g, '')));
+      }
+    } catch(e){}
+  }
+  return [...names].filter(n => n.length > 1).sort();
+}
+const allCmdsList = getAllCmdNames();
+const autoListText = allCmdsList.map(c => `│ •.${c}`).join('\n');
               let text = `┌◇ DEAN-ULTRA ◇┐
 │ PREFIX: [ ${PREFIX} ]
 │ OWNER: Theo
@@ -394,7 +456,11 @@ if(mode==="kick"){await sock.sendMessage(from,{text:"@"+tag+" Kicked for link!",
 │ . tagall
 ╰──────
 
-_By DEAN-ULTRA_ 👑`;  
+╭──「 ALL COMMANDS - AUTO 」──
+${autoListText}
+╰──────
+
+_By DEAN-ULTRA_ 👑`;
         await sock.sendMessage(from, {text: text}, {quoted: m});
       }catch(e){ console.log("Menu error", e.message); }
     } 
@@ -824,7 +890,7 @@ if(cmd==="demote"){
  }
 }
     const MUSIC_API_BASE = "https://apis.xwolf.space";
-const MUSIC_API_KEY = "wxa_u_fb1ac38983";
+const MUSIC_API_KEY = "wxa_u_5cb5aub2uv";
 
 async function wolfxGet(q){
   // Your docs say ?q= or ?url= — we use ?q= directly
